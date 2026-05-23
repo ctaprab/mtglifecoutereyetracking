@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta http-equiv="Expires" content="0"/>
+<title>MTG Life Counter v5</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{
+  width:100%;height:100%;overflow:hidden;
+  background:#111;
+  font-family:'Inter',sans-serif;
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+  user-select:none;
+}
+#cam-video{position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;}
+
+#app{
+  width:100vw;height:100dvh;
+  display:flex;flex-direction:column;
+  gap:5px;background:#111;padding:5px;
+}
+
+/* ── Panel ── */
+.panel{
+  flex:1;border-radius:24px;overflow:hidden;
+  position:relative;display:flex;
+}
+.panel.flipped{transform:rotate(180deg);}
+
+/* blue gradient bg — left half lighter */
+.panel-bg{
+  position:absolute;inset:0;border-radius:24px;
+  background:linear-gradient(135deg,#c8dff6 0%,#b2ceed 40%,#a4c0e4 70%,#96b3db 100%);
+}
+.panel-bg::before{
+  content:'';position:absolute;inset:0 50% 0 0;border-radius:24px 0 0 24px;
+  background:linear-gradient(135deg,#e0eefa 0%,#cde0f5 100%);
+}
+
+/* ── Touch zones ── */
+.zones{
+  position:relative;z-index:2;
+  width:100%;display:flex;align-items:stretch;
+}
+.zone{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;position:relative;border-radius:24px;min-height:100%;
+  transition:background .08s;
+}
+/* press feedback via JS class */
+.zone.flash-neg{background:rgba(210,70,50,.2);}
+.zone.flash-pos{background:rgba(30,140,70,.2);}
+
+.zone-divider{
+  position:absolute;left:50%;top:14%;bottom:14%;
+  width:1px;background:rgba(255,255,255,.6);
+  z-index:3;pointer-events:none;transform:translateX(-50%);
+}
+.zone-sym{
+  font-size:44px;font-weight:200;
+  color:rgba(20,50,110,.3);
+  line-height:1;pointer-events:none;
+  transition:color .08s,transform .08s;
+}
+.zone.flash-neg .zone-sym{color:rgba(190,50,30,.65);transform:scale(.8);}
+.zone.flash-pos .zone-sym{color:rgba(20,130,60,.65);transform:scale(.8);}
+
+/* ── Life number ── */
+.life-center{
+  position:absolute;left:50%;top:50%;
+  transform:translate(-50%,-50%);
+  z-index:5;pointer-events:none;
+  display:flex;flex-direction:column;align-items:center;
+}
+.life-num{
+  font-size:clamp(5rem,19vw,8.5rem);
+  font-weight:700;line-height:1;color:#1a2c50;
+  transition:color .3s;letter-spacing:-.04em;
+}
+.life-num.danger {color:#c0392b;}
+.life-num.warning{color:#bf7200;}
+.life-num.shake  {animation:shake .2s ease;}
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  25%{transform:translateX(-8px)}
+  75%{transform:translateX(8px)}
+}
+
+/* ── Header ── */
+.panel-header{
+  position:absolute;top:14px;left:50%;
+  transform:translateX(-50%);
+  z-index:6;pointer-events:none;
+  display:flex;flex-direction:column;align-items:center;gap:5px;
+}
+.player-tag{
+  background:rgba(255,255,255,.68);backdrop-filter:blur(10px);
+  border-radius:10px;padding:4px 16px;
+  font-size:12px;font-weight:600;color:#243860;
+  letter-spacing:.05em;border:1px solid rgba(255,255,255,.85);
+  white-space:nowrap;
+}
+.eye-pill{
+  background:rgba(255,255,255,.62);backdrop-filter:blur(10px);
+  border-radius:99px;padding:3px 11px;
+  display:flex;align-items:center;gap:5px;
+  font-size:10.5px;font-weight:500;color:#3a5a8a;
+  border:1px solid rgba(255,255,255,.78);
+  pointer-events:none;transition:all .3s;
+}
+.eye-pill.away    {background:rgba(255,195,190,.82);color:#9a1e10;border-color:rgba(240,140,130,.5);}
+.eye-pill.watching{background:rgba(195,242,215,.82);color:#166038;border-color:rgba(140,220,175,.5);}
+.eye-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:#7a9ab0;transition:background .3s;flex-shrink:0;
+}
+.eye-dot.watching{background:#27ae60;box-shadow:0 0 0 2px rgba(39,174,96,.3);}
+.eye-dot.away    {background:#e74c3c;box-shadow:0 0 0 2px rgba(231,76,60,.3);animation:pdot .7s ease infinite alternate;}
+.eye-dot.loading {background:#e67e22;animation:pdot .9s ease infinite alternate;}
+@keyframes pdot{from{opacity:.3}to{opacity:1}}
+
+/* ── Idle bar ── */
+.idle-bar-wrap{
+  position:absolute;bottom:0;left:0;right:0;
+  z-index:7;pointer-events:none;
+  padding:0 18px 13px;opacity:0;transition:opacity .3s;
+}
+.idle-bar-wrap.visible{opacity:1;}
+.idle-track{
+  height:4px;border-radius:2px;
+  background:rgba(255,255,255,.38);overflow:hidden;margin-bottom:5px;
+}
+.idle-fill{
+  height:100%;width:0%;border-radius:2px;
+  background:rgba(39,174,96,.85);transition:width .12s linear,background .3s;
+}
+.idle-text{
+  text-align:center;font-size:10.5px;font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase;color:rgba(30,70,150,.65);
+}
+
+/* ── Delta float ── */
+.delta-float{
+  position:absolute;pointer-events:none;
+  left:50%;top:16%;transform:translateX(-50%);
+  font-size:2rem;font-weight:700;
+  animation:fup .8s ease-out forwards;
+  white-space:nowrap;z-index:10;
+}
+@keyframes fup{
+  0%  {opacity:1;transform:translateX(-50%) translateY(0);}
+  100%{opacity:0;transform:translateX(-50%) translateY(-2.8rem);}
+}
+
+/* ── Drain vignette ── */
+#drain-vignette{
+  position:fixed;inset:0;pointer-events:none;z-index:40;
+  background:radial-gradient(ellipse at center,transparent 28%,rgba(180,25,15,.28) 100%);
+  opacity:0;transition:opacity .3s;
+}
+#drain-vignette.active{opacity:1;animation:pvig .75s ease-in-out infinite alternate;}
+@keyframes pvig{from{opacity:.55}to{opacity:1}}
+
+/* ── Center FABs ── */
+#center-fabs{
+  position:fixed;left:50%;top:50%;
+  transform:translate(-50%,-50%);
+  z-index:30;
+  display:flex;align-items:center;gap:6px;
+}
+.fab{
+  background:rgba(255,255,255,.8);backdrop-filter:blur(12px);
+  border:1.5px solid rgba(255,255,255,.92);border-radius:99px;
+  font-family:'Inter',sans-serif;font-weight:600;
+  letter-spacing:.09em;text-transform:uppercase;color:#3a5a9a;
+  cursor:pointer;white-space:nowrap;
+}
+.fab:active{background:rgba(255,255,255,.96);}
+#reset-fab{font-size:11px;padding:5px 15px;}
+#help-btn {font-size:13px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;padding:0;}
+
+/* ── Overlays ── */
+.overlay{
+  position:fixed;inset:0;
+  background:rgba(205,222,242,.96);backdrop-filter:blur(14px);
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  gap:15px;z-index:200;animation:fdin .3s ease;
+}
+@keyframes fdin{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+.overlay h1{font-size:clamp(2rem,8vw,3rem);font-weight:700;color:#1a2a4a;letter-spacing:-.02em;}
+.ov-sub{font-size:13px;color:#5a7aaa;}
+.ov-btn{
+  padding:12px 30px;border-radius:12px;cursor:pointer;
+  font-family:'Inter',sans-serif;font-weight:600;
+  font-size:13px;letter-spacing:.05em;text-transform:uppercase;
+  border:none;transition:opacity .12s;
+}
+.ov-btn:active{opacity:.7;}
+.ov-btn.primary{background:#253f7a;color:#fff;}
+.ov-btn.danger {background:rgba(195,55,45,.14);color:#b82a1a;border:1.5px solid rgba(195,55,45,.3);}
+.ov-btn.ghost  {background:rgba(90,120,175,.1);color:#3a5a8a;}
+
+/* ── Camera prompt ── */
+#cam-prompt{
+  position:fixed;inset:0;
+  background:rgba(205,222,242,.98);backdrop-filter:blur(18px);
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  gap:13px;z-index:300;padding:2rem;text-align:center;
+}
+.cam-icon{font-size:3rem;}
+#cam-prompt h2{font-size:1.4rem;font-weight:700;color:#1a2a4a;}
+#cam-prompt p{color:#5a7aaa;font-size:13px;line-height:1.7;max-width:290px;}
+#cam-prompt .bilingual{font-size:12px;color:#7a9ac8;margin-top:-4px;}
+.cam-btn{
+  background:#253f7a;border:none;color:#fff;
+  font-family:'Inter',sans-serif;font-weight:600;
+  font-size:13px;letter-spacing:.06em;text-transform:uppercase;
+  padding:13px 0;border-radius:12px;cursor:pointer;
+  width:100%;max-width:260px;
+}
+.cam-btn:active{opacity:.82;}
+.skip-btn{
+  background:none;border:none;color:#7a9ac8;
+  font-family:'Inter',sans-serif;font-size:12px;
+  cursor:pointer;text-decoration:underline;
+}
+
+/* ── Help overlay ── */
+#help-overlay{
+  position:fixed;inset:0;
+  background:rgba(205,222,242,.97);backdrop-filter:blur(18px);
+  display:none;flex-direction:column;
+  align-items:center;z-index:250;
+  overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:22px 18px 36px;animation:fdin .3s ease;
+}
+#help-overlay.open{display:flex;}
+.help-close{
+  align-self:flex-end;background:rgba(90,120,175,.14);
+  border:none;border-radius:99px;padding:5px 16px;
+  font-family:'Inter',sans-serif;font-size:12px;font-weight:600;
+  color:#3a5a9a;cursor:pointer;margin-bottom:14px;
+}
+.help-title{font-size:1.25rem;font-weight:700;color:#1a2a4a;text-align:center;margin-bottom:3px;}
+.help-subtitle{font-size:11.5px;color:#7a9ac8;text-align:center;margin-bottom:18px;}
+.help-section{
+  width:100%;max-width:360px;
+  background:rgba(255,255,255,.62);border-radius:16px;
+  padding:14px;margin-bottom:10px;
+  border:1px solid rgba(255,255,255,.88);
+}
+.help-section h3{
+  font-size:12.5px;font-weight:700;color:#253f7a;
+  margin-bottom:9px;display:flex;align-items:center;gap:5px;
+}
+.help-row{display:flex;gap:9px;margin-bottom:8px;align-items:flex-start;}
+.help-row:last-child{margin-bottom:0;}
+.help-en{font-size:12px;color:#1e304e;line-height:1.55;flex:1;}
+.help-th{font-size:11.5px;color:#5a7aaa;line-height:1.55;flex:1;}
+.lang-badge{
+  font-size:8.5px;font-weight:700;letter-spacing:.08em;
+  padding:2px 5px;border-radius:4px;flex-shrink:0;margin-top:2px;
+}
+.lang-en{background:rgba(37,63,122,.11);color:#253f7a;}
+.lang-th{background:rgba(37,122,63,.11);color:#15602a;}
+</style>
+</head>
+<body>
+<video id="cam-video" playsinline muted autoplay></video>
+
+<div id="app">
+
+  <!-- ── OPPONENT (top, flipped) ── -->
+  <div class="panel flipped" id="panel2">
+    <div class="panel-bg"></div>
+    <div class="panel-header">
+      <div class="player-tag" id="label2">Opponent</div>
+      <div class="eye-pill" id="eye-pill">
+        <div class="eye-dot loading" id="eye-dot"></div>
+        <span id="eye-label">Camera off</span>
+      </div>
+    </div>
+    <div class="zones">
+      <div class="zone pos" id="z2p"
+           ontouchstart="zt(2,1,this,event)"
+           ontouchend="zr(this)" ontouchcancel="zr(this)">
+        <span class="zone-sym">+</span>
+      </div>
+      <div class="zone-divider"></div>
+      <div class="zone neg" id="z2n"
+           ontouchstart="zt(2,-1,this,event)"
+           ontouchend="zr(this)" ontouchcancel="zr(this)">
+        <span class="zone-sym">−</span>
+      </div>
+    </div>
+    <div class="life-center"><div class="life-num" id="life2">20</div></div>
+    <div class="idle-bar-wrap" id="idle-bar-wrap">
+      <div class="idle-track"><div class="idle-fill" id="idle-fill"></div></div>
+      <div class="idle-text">👁 Eyes away · <span id="countdown">3</span>s</div>
+    </div>
+  </div>
+
+  <!-- ── YOU (bottom) ── -->
+  <div class="panel" id="panel1">
+    <div class="panel-bg"></div>
+    <div class="panel-header"><div class="player-tag">You</div></div>
+    <div class="zones">
+      <div class="zone neg"
+           ontouchstart="zt(1,-1,this,event)"
+           ontouchend="zr(this)" ontouchcancel="zr(this)">
+        <span class="zone-sym">−</span>
+      </div>
+      <div class="zone-divider"></div>
+      <div class="zone pos"
+           ontouchstart="zt(1,1,this,event)"
+           ontouchend="zr(this)" ontouchcancel="zr(this)">
+        <span class="zone-sym">+</span>
+      </div>
+    </div>
+    <div class="life-center"><div class="life-num" id="life1">20</div></div>
+  </div>
+
+</div>
+
+<!-- Center FABs -->
+<div id="center-fabs">
+  <button class="fab" id="reset-fab" onclick="confirmReset()">⟳ Reset</button>
+  <button class="fab" id="help-btn"  onclick="openHelp()">?</button>
+</div>
+
+<div id="drain-vignette"></div>
+
+<!-- Game over -->
+<div class="overlay" id="gameover-overlay" style="display:none">
+  <div class="cam-icon" id="go-icon">🏆</div>
+  <h1 id="go-title">You Win!</h1>
+  <p class="ov-sub" id="go-sub"></p>
+  <button class="ov-btn primary" onclick="resetGame()">New Game</button>
+</div>
+
+<!-- Reset confirm -->
+<div class="overlay" id="reset-overlay" style="display:none">
+  <h1 style="font-size:1.4rem">Reset game?</h1>
+  <p class="ov-sub">Both players return to 20 life.<br>ผู้เล่นทั้งคู่กลับมา 20 ชีวิต</p>
+  <div style="display:flex;gap:10px">
+    <button class="ov-btn danger" onclick="resetGame()">Reset</button>
+    <button class="ov-btn ghost"  onclick="closeReset()">Cancel</button>
+  </div>
+</div>
+
+<!-- Camera prompt -->
+<div id="cam-prompt">
+  <div class="cam-icon">👁</div>
+  <h2>Eye Tracking</h2>
+  <p>Uses the front camera to detect if your opponent looks away.<br>Their life drains <strong>−1</strong> after <strong>3 seconds</strong> of not watching.</p>
+  <p class="bilingual">ใช้กล้องหน้าตรวจจับสายตาคู่ต่อสู้ — ไม่มองจอ 3 วินาที ชีวิตหายไป −1</p>
+  <button class="cam-btn" onclick="startCamera()">Enable Camera / เปิดกล้อง</button>
+  <button class="skip-btn" onclick="skipCamera()">Skip — touch timer / ใช้แบบแตะหน้าจอ</button>
+</div>
+
+<!-- Help / Manual -->
+<div id="help-overlay">
+  <button class="help-close" onclick="closeHelp()">✕ Close / ปิด</button>
+  <div class="help-title">📖 How to Play</div>
+  <div class="help-subtitle">วิธีเล่น MTG Life Counter</div>
+
+  <div class="help-section">
+    <h3>🎮 Basic Controls · การควบคุมพื้นฐาน</h3>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">Tap the <strong>left half</strong> of your panel to −1 life. Tap the <strong>right half</strong> to +1 life.</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">แตะ<strong>ครึ่งซ้าย</strong>ของช่องเพื่อลด 1 ชีวิต แตะ<strong>ครึ่งขวา</strong>เพื่อเพิ่ม 1 ชีวิต</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">The <strong>top panel</strong> (upside-down) is your opponent's — they tap from their side.</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">ช่อง<strong>บนสุด</strong> (กลับหัว) คือช่องคู่ต่อสู้ ให้แตะจากฝั่งตัวเอง</div>
+    </div>
+  </div>
+
+  <div class="help-section">
+    <h3>⏱ Tap Delay · ดีเลย์การแตะ</h3>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">Each zone has a <strong>400 ms cooldown</strong> per tap to prevent accidental double-fires. You'll see the zone flash when a tap is registered.</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">แต่ละโซนมี<strong>คูลดาวน์ 400 มิลลิวินาที</strong>หลังแตะแต่ละครั้ง ป้องกันแตะซ้ำโดยไม่ตั้งใจ จะเห็นแสงวาบเมื่อการแตะถูกบันทึก</div>
+    </div>
+  </div>
+
+  <div class="help-section">
+    <h3>👁 Eye Tracking · การติดตามสายตา</h3>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">Camera detects if your opponent looks away or closes their eyes. After <strong>3 seconds</strong> → opponent loses −1 life automatically. Locks until they look back or touch the screen.</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">กล้องตรวจจับว่าคู่ต่อสู้หันหน้าออกหรือหลับตา ไม่มองจอ <strong>3 วินาที</strong> → ชีวิตหาย −1 อัตโนมัติ ล็อกจนกว่าจะมองกลับหรือแตะจอ</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">🟢 Watching = looking at screen &nbsp;·&nbsp; 🔴 Eyes away = looked away &nbsp;·&nbsp; 🟡 Scanning = loading</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">🟢 มองจออยู่ &nbsp;·&nbsp; 🔴 ไม่มองจอ &nbsp;·&nbsp; 🟡 กำลังโหลด</div>
+    </div>
+  </div>
+
+  <div class="help-section">
+    <h3>📱 Touch Timer Mode · โหมดแตะหน้าจอ</h3>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">No camera? The timer resets every time <strong>you</strong> tap your panel. Go 3 seconds without tapping → opponent loses 1 life.</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">ไม่มีกล้อง? ไทม์เมอร์รีเซ็ตทุกครั้งที่<strong>คุณ</strong>แตะช่องตัวเอง ไม่แตะ 3 วินาที → คู่ต่อสู้เสีย 1 ชีวิต</div>
+    </div>
+  </div>
+
+  <div class="help-section">
+    <h3>🔊 Sounds · เสียง</h3>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en"><strong>Bright ding</strong> = +1 life &nbsp;|&nbsp; <strong>Low thud</strong> = −1 life &nbsp;|&nbsp; <strong>Alarm buzz</strong> = eye-drain triggered</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th"><strong>เสียงสูงใส</strong> = +1 &nbsp;|&nbsp; <strong>เสียงทึบ</strong> = −1 &nbsp;|&nbsp; <strong>เสียงสัญญาณ</strong> = ระบบตาหักชีวิต</div>
+    </div>
+  </div>
+
+  <div class="help-section">
+    <h3>🔄 Reset · รีเซ็ต</h3>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">Tap <strong>⟳ Reset</strong> in the center. Both players return to 20 life.</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">แตะ <strong>⟳ Reset</strong> ตรงกลาง ผู้เล่นทั้งคู่กลับมา 20 ชีวิต</div>
+    </div>
+  </div>
+
+  <div class="help-section">
+    <h3>📷 Camera Tips · เคล็ดลับกล้อง</h3>
+    <div class="help-row">
+      <span class="lang-badge lang-en">EN</span>
+      <div class="help-en">Open this file directly in <strong>Safari</strong> or <strong>Chrome</strong> on your phone. Camera does <strong>not</strong> work inside the Claude app preview (sandbox restriction).</div>
+    </div>
+    <div class="help-row">
+      <span class="lang-badge lang-th">TH</span>
+      <div class="help-th">ต้องเปิดไฟล์ใน <strong>Safari</strong> หรือ <strong>Chrome</strong> บนมือถือโดยตรง — กล้องไม่ทำงานในพรีวิวของ Claude เพราะ sandbox</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════
+//  CONSTANTS
+// ══════════════════════════════════════════
+const START     = 20;
+const DRAIN_SEC = 3;      // seconds before drain
+const WARN_SEC  = 1.5;    // warning bar starts
+const TAP_DELAY = 400;    // ms cooldown per zone between taps
+
+// ══════════════════════════════════════════
+//  AUDIO
+// ══════════════════════════════════════════
+let _actx = null;
+function actx(){
+  if(!_actx) _actx = new (window.AudioContext||window.webkitAudioContext)();
+  if(_actx.state==='suspended') _actx.resume();
+  return _actx;
+}
+function playPlus(){
+  try{
+    const c=actx(), o=c.createOscillator(), g=c.createGain();
+    o.connect(g); g.connect(c.destination);
+    o.type='sine';
+    o.frequency.setValueAtTime(900,c.currentTime);
+    o.frequency.exponentialRampToValueAtTime(1200,c.currentTime+0.09);
+    g.gain.setValueAtTime(0.22,c.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,c.currentTime+0.28);
+    o.start(); o.stop(c.currentTime+0.28);
+  }catch(e){}
+}
+function playMinus(){
+  try{
+    const c=actx(), o=c.createOscillator(), g=c.createGain();
+    o.connect(g); g.connect(c.destination);
+    o.type='triangle';
+    o.frequency.setValueAtTime(320,c.currentTime);
+    o.frequency.exponentialRampToValueAtTime(130,c.currentTime+0.2);
+    g.gain.setValueAtTime(0.28,c.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,c.currentTime+0.24);
+    o.start(); o.stop(c.currentTime+0.24);
+  }catch(e){}
+}
+function playDrain(){
+  try{
+    const c=actx();
+    [0,0.2].forEach(off=>{
+      const o=c.createOscillator(), g=c.createGain();
+      o.connect(g); g.connect(c.destination);
+      o.type='sawtooth'; o.frequency.value=200;
+      g.gain.setValueAtTime(0,c.currentTime+off);
+      g.gain.linearRampToValueAtTime(0.24,c.currentTime+off+0.02);
+      g.gain.exponentialRampToValueAtTime(0.001,c.currentTime+off+0.17);
+      o.start(c.currentTime+off); o.stop(c.currentTime+off+0.17);
+    });
+  }catch(e){}
+}
+
+// ══════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════
+let lives        = [START, START];
+let eyesWatching = true;
+let idleStart    = null;
+let drainLocked  = false;
+let idleTick     = null;
+
+// Per-zone tap cooldown (WeakMap keyed by DOM element)
+const tapCd = new WeakMap();
+
+// ══════════════════════════════════════════
+//  DOM
+// ══════════════════════════════════════════
+const $life    = [null, document.getElementById('life1'),   document.getElementById('life2')];
+const $panel   = [null, document.getElementById('panel1'),  document.getElementById('panel2')];
+const $label2  = document.getElementById('label2');
+const $eyeDot  = document.getElementById('eye-dot');
+const $eyeLbl  = document.getElementById('eye-label');
+const $eyePill = document.getElementById('eye-pill');
+const $barWrap = document.getElementById('idle-bar-wrap');
+const $fill    = document.getElementById('idle-fill');
+const $cd      = document.getElementById('countdown');
+const $vig     = document.getElementById('drain-vignette');
+
+// ══════════════════════════════════════════
+//  TOUCH HANDLERS
+// ══════════════════════════════════════════
+function zt(player, amt, el, e){
+  e.preventDefault();
+  e.stopPropagation();
+  const now = Date.now();
+  const last = tapCd.get(el) || 0;
+  if(now - last < TAP_DELAY) return;   // cooldown — ignore
+  tapCd.set(el, now);
+  // visual flash
+  el.classList.add(amt > 0 ? 'flash-pos' : 'flash-neg');
+  adjust(player, amt);
+}
+function zr(el){
+  // release flash after short delay so it's visible
+  setTimeout(()=>{ el.classList.remove('flash-pos','flash-neg'); }, 90);
+}
+
+// ══════════════════════════════════════════
+//  LIFE
+// ══════════════════════════════════════════
+function updateDisplay(p){
+  const v = lives[p-1], el = $life[p];
+  el.textContent = v;
+  el.classList.remove('danger','warning');
+  if(v <= 5)       el.classList.add('danger');
+  else if(v <= 10) el.classList.add('warning');
+}
+
+function adjust(p, amt){
+  lives[p-1] = Math.max(0, lives[p-1] + amt);
+  updateDisplay(p);
+  showDelta(p, amt);
+  amt > 0 ? playPlus() : playMinus();
+  checkDead();
+  if(p === 1) onActivity();
+}
+
+function showDelta(p, amt){
+  const el = $life[p];
+  el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake');
+  setTimeout(()=> el.classList.remove('shake'), 240);
+  const wrap = el.closest('.life-center') || el.parentElement;
+  const d = document.createElement('div');
+  d.className = 'delta-float';
+  d.textContent = amt > 0 ? `+${amt}` : `${amt}`;
+  d.style.color = amt < 0 ? '#c0392b' : '#1a7a48';
+  wrap.appendChild(d);
+  setTimeout(()=> d.remove(), 850);
+}
+
+function checkDead(){
+  const [p1,p2] = lives;
+  if(p1 > 0 && p2 > 0) return;
+  const icon  = document.getElementById('go-icon');
+  const title = document.getElementById('go-title');
+  const sub   = document.getElementById('go-sub');
+  if(p1<=0&&p2<=0){ icon.textContent='🤝'; title.textContent='Draw';     sub.textContent='Both eliminated · เสมอกัน'; }
+  else if(p2<=0)  { icon.textContent='🏆'; title.textContent='You Win!'; sub.textContent='Opponent reached 0 · คู่ต่อสู้หมดชีวิต'; }
+  else            { icon.textContent='💀'; title.textContent='You Lose'; sub.textContent='You reached 0 · คุณหมดชีวิต'; }
+  document.getElementById('gameover-overlay').style.display = 'flex';
+  stopIdle();
+}
+
+// ══════════════════════════════════════════
+//  IDLE / DRAIN
+// ══════════════════════════════════════════
+function onActivity(){
+  idleStart = null; drainLocked = false; hideBar();
+}
+function onIdleBegin(){
+  if(!drainLocked && !idleStart) idleStart = Date.now();
+}
+function hideBar(){
+  $barWrap.classList.remove('visible');
+  $fill.style.width = '0%';
+  $vig.classList.remove('active');
+  $panel[2].style.boxShadow = '';
+}
+
+function startIdle(){
+  clearInterval(idleTick);
+  idleTick = setInterval(()=>{
+    if(drainLocked || !idleStart){ hideBar(); return; }
+    const sec = (Date.now() - idleStart) / 1000;
+    if(sec >= WARN_SEC){
+      $barWrap.classList.add('visible');
+      const pct = Math.min(sec / DRAIN_SEC, 1);
+      $fill.style.width = (pct * 100) + '%';
+      $fill.style.background =
+        sec >= DRAIN_SEC - 0.4 ? 'rgba(215,55,45,.88)' :
+        sec >  DRAIN_SEC * 0.6 ? 'rgba(225,145,0,.88)' :
+                                  'rgba(39,174,96,.88)';
+      $cd.textContent = Math.max(0, Math.ceil(DRAIN_SEC - sec));
+    } else {
+      $barWrap.classList.remove('visible');
+    }
+    if(sec >= DRAIN_SEC && !drainLocked){
+      drainLocked = true; doDrain();
+    }
+  }, 100);
+}
+
+function doDrain(){
+  lives[1] = Math.max(0, lives[1] - 1);
+  updateDisplay(2); showDelta(2,-1); playDrain(); checkDead();
+  $fill.style.width = '100%';
+  $fill.style.background = 'rgba(215,55,45,.88)';
+  $vig.classList.add('active');
+  $panel[2].style.boxShadow = '0 0 0 4px rgba(215,55,45,.5)';
+  setTimeout(()=>{
+    $vig.classList.remove('active');
+    $barWrap.classList.remove('visible');
+    $panel[2].style.boxShadow = '';
+  }, 2000);
+}
+
+function stopIdle(){ clearInterval(idleTick); hideBar(); }
+
+// ══════════════════════════════════════════
+//  EYE STATUS
+// ══════════════════════════════════════════
+function setEye(state){
+  $eyeDot.className = 'eye-dot ' + state;
+  $eyePill.className = 'eye-pill ' +
+    (state==='watching' ? 'watching' : (state==='away'||state==='none') ? 'away' : '');
+  const L = {loading:'Scanning…',watching:'Watching',away:'Eyes away',none:'No face',off:'Touch timer'};
+  $eyeLbl.textContent = L[state] || state;
+  $label2.style.color = (state==='away'||state==='none') ? '#9a1e10' : '';
+}
+
+// ══════════════════════════════════════════
+//  MEDIAPIPE FACE MESH
+// ══════════════════════════════════════════
+const L_TOP=159,L_BOT=145,L_L=33,L_R=133;
+const R_TOP=386,R_BOT=374,R_L=362,R_R=263;
+function dist(a,b){ const dx=a.x-b.x,dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
+function earVal(lm){
+  return((dist(lm[L_TOP],lm[L_BOT])/dist(lm[L_L],lm[L_R]))+
+         (dist(lm[R_TOP],lm[R_BOT])/dist(lm[R_L],lm[R_R])))/2;
+}
+function gazeVal(lm){ return Math.abs(lm[1].x-(lm[L_L].x+lm[R_R].x)/2); }
+
+let faceMesh=null, mpCam=null, lastFace=0;
+
+function initFaceMesh(vid){
+  faceMesh = new FaceMesh({
+    locateFile: f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`
+  });
+  faceMesh.setOptions({
+    maxNumFaces:1, refineLandmarks:true,
+    minDetectionConfidence:.5, minTrackingConfidence:.5
+  });
+  faceMesh.onResults(r=>{
+    const now = Date.now();
+    if(!r.multiFaceLandmarks?.length){
+      if(now - lastFace > 2000) handleAway('none');
+      return;
+    }
+    lastFace = now;
+    const lm = r.multiFaceLandmarks[0];
+    (earVal(lm)<.20 || gazeVal(lm)>.07) ? handleAway('away') : handleWatch();
+  });
+  mpCam = new Camera(vid,{
+    onFrame: async()=>{ await faceMesh.send({image:vid}); },
+    width:320, height:240, facingMode:'user'
+  });
+  mpCam.start();
+  setEye('loading');
+  setTimeout(()=>{ if($eyeDot.classList.contains('loading')) setEye('watching'); }, 3000);
+}
+
+function handleAway(t){
+  if(!eyesWatching) return;
+  eyesWatching = false; setEye(t); onIdleBegin();
+}
+function handleWatch(){
+  const was = !eyesWatching;
+  eyesWatching = true; setEye('watching');
+  if(was) onActivity();
+}
+
+// ══════════════════════════════════════════
+//  CAMERA
+// ══════════════════════════════════════════
+async function startCamera(){
+  document.getElementById('cam-prompt').style.display = 'none';
+  setEye('loading'); startIdle();
+  try{
+    await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
+    initFaceMesh(document.getElementById('cam-video'));
+  }catch(e){ fallback(); }
+}
+function skipCamera(){
+  document.getElementById('cam-prompt').style.display = 'none';
+  fallback();
+}
+function fallback(){
+  setEye('off'); $eyePill.style.opacity='.55'; startIdle();
+  document.addEventListener('pointerdown', onActivity, {passive:true});
+  idleStart = Date.now();
+}
+
+// ══════════════════════════════════════════
+//  RESET / HELP
+// ══════════════════════════════════════════
+function confirmReset(){ document.getElementById('reset-overlay').style.display='flex'; }
+function closeReset(){   document.getElementById('reset-overlay').style.display='none'; }
+function resetGame(){
+  lives = [START, START];
+  updateDisplay(1); updateDisplay(2);
+  document.getElementById('gameover-overlay').style.display = 'none';
+  document.getElementById('reset-overlay').style.display    = 'none';
+  onActivity(); startIdle();
+}
+function openHelp(){ document.getElementById('help-overlay').classList.add('open'); }
+function closeHelp(){ document.getElementById('help-overlay').classList.remove('open'); }
+
+// ══════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════
+updateDisplay(1);
+updateDisplay(2);
+</script>
+</body>
+</html>
